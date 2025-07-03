@@ -14,6 +14,9 @@ import uuid
 import enum
 import os
 
+from fastapi.middleware.cors import CORSMiddleware
+
+
 # Database setup
 SQLALCHEMY_DATABASE_URL = "sqlite:///./feedback_system.db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
@@ -327,6 +330,89 @@ def create_feedback(
         updated_at=feedback_obj.updated_at,
         acknowledged=acknowledgment is not None
     )
+
+@app.put("/feedback/{feedback_id}", response_model=FeedbackResponse)
+def update_feedback(
+    feedback_id: str,
+    feedback_data: FeedbackUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != UserRole.manager:
+        raise HTTPException(status_code=403, detail="Only managers can update feedback")
+    
+    # Get existing feedback
+    feedback_obj = db.query(Feedback).filter(Feedback.id == feedback_id).first()
+    if not feedback_obj:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    
+    # Verify the manager owns this feedback
+    if feedback_obj.manager_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Can only update your own feedback")
+    
+    # Update fields if provided
+    if feedback_data.strengths is not None:
+        feedback_obj.strengths = feedback_data.strengths
+    if feedback_data.areas_to_improve is not None:
+        feedback_obj.areas_to_improve = feedback_data.areas_to_improve
+    if feedback_data.sentiment is not None:
+        feedback_obj.sentiment = feedback_data.sentiment
+    if feedback_data.tags is not None:
+        feedback_obj.tags = feedback_data.tags
+    
+    db.commit()
+    db.refresh(feedback_obj)
+    
+    # Get manager and employee names
+    manager = db.query(User).filter(User.id == feedback_obj.manager_id).first()
+    employee = db.query(User).filter(User.id == feedback_obj.employee_id).first()
+    
+    # Check if acknowledged
+    acknowledgment = db.query(Acknowledgment).filter(
+        Acknowledgment.feedback_id == feedback_obj.id
+    ).first()
+    
+    return FeedbackResponse(
+        id=feedback_obj.id,
+        manager_id=feedback_obj.manager_id,
+        employee_id=feedback_obj.employee_id,
+        manager_name=manager.name if manager else "Unknown",
+        employee_name=employee.name if employee else "Unknown",
+        strengths=feedback_obj.strengths,
+        areas_to_improve=feedback_obj.areas_to_improve,
+        sentiment=feedback_obj.sentiment,
+        tags=feedback_obj.tags,
+        created_at=feedback_obj.created_at,
+        updated_at=feedback_obj.updated_at,
+        acknowledged=acknowledgment is not None
+    )
+
+@app.delete("/feedback/{feedback_id}")
+def delete_feedback(
+    feedback_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != UserRole.manager:
+        raise HTTPException(status_code=403, detail="Only managers can delete feedback")
+    
+    # Get existing feedback
+    feedback_obj = db.query(Feedback).filter(Feedback.id == feedback_id).first()
+    if not feedback_obj:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    
+    # Verify the manager owns this feedback
+    if feedback_obj.manager_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Can only delete your own feedback")
+    
+    # Delete any acknowledgments first
+    db.query(Acknowledgment).filter(Acknowledgment.feedback_id == feedback_id).delete()
+    
+    # Delete the feedback
+    db.delete(feedback_obj)
+    db.commit()
+    
+    return {"message": "Feedback deleted successfully"}
 
 @app.get("/feedback", response_model=List[FeedbackResponse])
 def get_feedback(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
